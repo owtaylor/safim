@@ -1,0 +1,10 @@
+accelerate
+torch
+Jinja2
+openai
+tiktoken
+transformers
+tqdm
+tree-sitter
+requests
+datasets
