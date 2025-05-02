@@ -598,6 +598,56 @@ class MagicCoderModel(ModelWrapper):
             raise NotImplementedError()
 
 
+class GraniteModel(ModelWrapper):
+    def __init__(self, model_name, max_length, block_comments=False):
+        assert model_name.startswith("ibm-granite/granite")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer.model_max_length = max_length
+        self.max_length = max_length
+        device = torch.device("cuda")
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=torch.float16
+        ).to(device)
+        self.logits_processor = (
+            [
+                NoBadWordsLogitsProcessor(
+                    [[word_idx] for word_idx in self.tokenizer.convert_tokens_to_ids(['#', 'Ġ#', '/*', 'Ġ/*'])],
+                    self.tokenizer.eos_token_id
+                )
+            ]
+            if block_comments
+            else None
+        )
+
+    def invoke(self, prompt: str) -> str:
+        input_ids = self.tokenizer(
+            prompt, truncation=True, return_attention_mask=False, return_tensors="pt"
+        ).input_ids.to(self.model.device)
+        input_ids_len = input_ids.shape[1]
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                input_ids,
+                do_sample=True,
+                num_return_sequences=1,
+                temperature=0.2,
+                max_length=min(input_ids_len + 128, self.max_length),
+                top_p=0.95,
+                use_cache=True,
+                logits_processor=self.logits_processor
+            )
+        generated_text = self.tokenizer.decode(
+            generated_ids[0, input_ids_len:],
+            skip_special_tokens=True
+        )
+        return generated_text
+
+    def assemble_infilling_prompt(self, prefix: str, suffix: str, reverse: bool = False) -> str:
+        if reverse:
+            return "<fim_prefix>" + "<fim_suffix>" + suffix + "<fim_middle>" + prefix
+        else:
+            return "<fim_prefix>" + prefix + "<fim_suffix>" + suffix + "<fim_middle>"
+
+
 def build_model(args: Namespace) -> ModelWrapper:
     if args.model_name.startswith("codellama/CodeLlama"):
         model_wrapper = CodeLlama(args.model_name, 4096, args.block_comments)
@@ -621,6 +671,8 @@ def build_model(args: Namespace) -> ModelWrapper:
         model_wrapper = SantacoderModel(args.model_name, 2048, args.block_comments)
     elif args.model_name.startswith("ise-uiuc/Magicoder"):
         model_wrapper = MagicCoderModel(args.model_name, 4096, args.block_comments)
+    elif args.model_name.startswith("ibm-granite/granite"):
+        model_wrapper = GraniteModel(args.model_name, 4096, args.block_comments)
     else:
         raise ValueError(args.model_name)
     return model_wrapper
